@@ -10,9 +10,10 @@ import datetime
 
 import torch
 import torch.distributed as dist
+from torch_npu.contrib import transfer_to_npu
 
 import sys
-sys.path.append("/remote-home1/cktan/server_tools/")
+sys.path.append("/home/image_data/cktan/reps/server_tools")
 from scripts import dump, load, get_rank_and_world_size
 from larknotice import lark_sender
 
@@ -197,7 +198,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default= "/remote-home1/share/models/vision_encoder/clip-vit-large-patch14-336-openai")
     parser.add_argument('--output', type=str, default='./outputs', help="Directory to where results are saved")
-    parser.add_argument('--coco_image_root', type=str, default='/remote-home1/share/data/COCO2017val/val2017')
+    parser.add_argument('--coco_image_root', type=str, default='/home/save_dir/cktan/data/val2017')
     parser.add_argument('--model_base', type=str, default=None)
     parser.add_argument('--data_root', type=str, default='./data')
 

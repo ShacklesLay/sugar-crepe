@@ -10,9 +10,10 @@ import datetime
 
 import torch
 import torch.distributed as dist
+from torch_npu.contrib import transfer_to_npu
 
 import sys
-sys.path.append("/remote-home1/cktan/server_tools/")
+sys.path.append("/home/image_data/cktan/reps/server_tools")
 from scripts import dump, load, get_rank_and_world_size
 from larknotice import lark_sender
 

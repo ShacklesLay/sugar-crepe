@@ -12,7 +12,8 @@ import torch
 import torch.distributed as dist
 
 import sys
-sys.path.append("/remote-home1/cktan/server_tools/")
+sys.path.append("/home/image_data/cktan/reps/server_tools")
+from torch_npu.contrib import transfer_to_npu
 from scripts import dump, load, get_rank_and_world_size
 from larknotice import lark_sender
 
@@ -146,7 +147,7 @@ def infer_data_job(dataset, model, image_root, tokenizer, image_processor, datas
     
     
 def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir):
-    metrics = {}
+    rank, world_size = get_rank_and_world_size()
     for c, data_dict in dataset.items():
         # 先将原有json文件转换为padnas的dataframe，便于后续处理
         rows = []
@@ -155,26 +156,24 @@ def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir):
             rows.append(row)
         df = pd.DataFrame(rows, columns=['index','image_path', 'negative_caption', 'caption'])
         infer_data_job(df, model, image_root, tokenizer, image_processor, c, work_dir)
-        # for i, data in tqdm(data_dict.items(), desc=f'evaluating {c}'):
-        #     verbose = True if i==0 else False
-        #     image_path = os.path.join(image_root, data['filename'])
-        #     image = Image.open(image_path).convert('RGB')
-        #     correct = text_retrieval(data['caption'], data['negative_caption'], image, model, tokenizer, image_processor, verbose)
-        #     correct_cnt += correct
+        
+        if world_size > 1:
+            dist.barrier()
 
-@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/9824a4f2-07e2-40cc-ae32-74ded5a0db96")
+@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/893b2fc5-1a17-4c8b-90e7-e2d5e4d1a846")
 def main(args, lark_task):
     # Initialize distributed environment
     rank, world_size = get_rank_and_world_size()
     if world_size > 1:
         local_rank = os.environ.get('LOCAL_RANK', 0)
         torch.cuda.set_device(int(local_rank))
-        dist.init_process_group(backend='nccl', timeout=datetime.timedelta(seconds=10800))
+        dist.init_process_group(backend='nccl', timeout=datetime.timedelta(seconds=3600))
         
     model_path = args.model
 
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path,args.model_base, model_name,torch_dtype="bfloat16")
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path,args.model_base, model_name,torch_dtype="bfloat16", device_map='cpu')
+    model.cuda()
     model.eval()
     
     # conv_template="qwen_1_5"
@@ -210,12 +209,15 @@ def main(args, lark_task):
         print(metrics)
         print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
         json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
+    
+    if world_size > 1:
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default= "/remote-home1/cktan/reps/LLaVA-NeXT/checkpoints/midtune/llavanext-clip-vit-large-patch14-336-openai-Qwen2.5-0.5B-mlp2x_gelu-midtune_blip558k_plain-tune_vt")
     parser.add_argument('--output', type=str, default='./outputs', help="Directory to where results are saved")
-    parser.add_argument('--coco_image_root', type=str, default='/remote-home1/share/data/COCO2017val/val2017')
+    parser.add_argument('--coco_image_root', type=str, default='/home/save_dir/cktan/data/val2017')
     parser.add_argument('--model_base', type=str, default=None)
     parser.add_argument('--data_root', type=str, default='./data')
 
