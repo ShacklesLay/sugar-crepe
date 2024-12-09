@@ -206,6 +206,7 @@ def main(args, lark_task):
             correct = sum([int(x) for x in data['prediction']])
             total = len(data)
             metrics[c] = correct / total
+        metrics['average'] = sum(metrics.values()) / len(metrics)
         print(metrics)
         print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
         json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)

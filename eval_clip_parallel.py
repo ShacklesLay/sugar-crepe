@@ -160,6 +160,12 @@ def main(args, lark_task):
     model = CLIPModel.from_pretrained(model_path, torch_dtype=torch.bfloat16).cuda()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     image_processor = CLIPImageProcessor.from_pretrained(model_path)
+    
+    if args.weight_path is not None:
+        from safetensors.torch import load_file
+        states = load_file(args.weight_path+'/model.safetensors')
+        vision_tower_params = {k.replace('model.vision_tower.vision_tower.',''): v for k, v in states.items() if "vision_tower" in k}
+        model.load_state_dict(vision_tower_params, strict=False)
 
     model.eval()
 
@@ -178,6 +184,12 @@ def main(args, lark_task):
     
     model_name = model_path.split('/')[-1]
     output_path = args.output + '/' + model_name
+    if args.weight_path is not None:
+        if 'checkpoint' in args.weight_path:
+            weight_paths = args.weight_path.split('/')
+            output_path = args.output + '/vision_encoder' + '/' + weight_paths[-2] + '/' + weight_paths[-1]
+        else:
+            output_path = args.output + '/vision_encoder' + '/' + weight_paths[-1]
     os.makedirs(output_path, exist_ok=True)
     
     evaluate(args.coco_image_root, dataset, model, tokenizer, image_processor, output_path)
@@ -190,6 +202,7 @@ def main(args, lark_task):
             correct = sum([int(x) for x in data['prediction']])
             total = len(data)
             metrics[c] = correct / total
+        metrics['average'] = sum(metrics.values()) / len(metrics)
         print(metrics)
         print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
         json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
@@ -201,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--coco_image_root', type=str, default='/home/save_dir/cktan/data/val2017')
     parser.add_argument('--model_base', type=str, default=None)
     parser.add_argument('--data_root', type=str, default='./data')
+    parser.add_argument('--weight_path', type=str, default=None)
 
     args = parser.parse_args()
     
