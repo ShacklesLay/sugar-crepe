@@ -146,7 +146,7 @@ def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir):
         df = pd.DataFrame(rows, columns=['index','image_path', 'negative_caption', 'caption'])
         infer_data_job(df, model, image_root, tokenizer, image_processor, c, work_dir)
 
-@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/9824a4f2-07e2-40cc-ae32-74ded5a0db96")
+@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/893b2fc5-1a17-4c8b-90e7-e2d5e4d1a846")
 def main(args, lark_task):
     # Initialize distributed environment
     rank, world_size = get_rank_and_world_size()

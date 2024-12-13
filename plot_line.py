@@ -7,15 +7,15 @@ import numpy as np
 
 dir_path = './outputs'
 
-def get_data_plot(base_file_path):
-    files = os.listdir(dir_path)
-    files = [f for f in files if f.startswith(base_file_path)]
-    files = sorted(files, key=lambda x: int(x.split('-')[-1]))
+def get_data_plot(output_dir):
+    output_dir = os.path.join(dir_path, output_dir)
+    ck_files = os.listdir(output_dir)
+    ck_files_paths = [os.path.join(output_dir, f) for f in ck_files]
+    ck_files_paths = sorted(ck_files_paths, key=lambda x: int(x.split('-')[-1]))
     
     data_plot = {}
     
-    for f in files:
-        path = os.path.join(dir_path, f)
+    for path in ck_files_paths:
         data = load(os.path.join(path, 'results.json'))
         if 'average' not in data:
             data['average'] = sum(data.values()) / len(data)
@@ -42,16 +42,20 @@ def reorder(data_plot):
         
 data_plot = {}
 
-data_plot['baseline_epoch5'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer-midtune_vt-blip558k-epochs_5_checkpoint-')
-data_plot['cmov3_epoch10_last5'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov3-tune_mlp_lastlayer-cmov3-midtune_vt-blip558k-epochs_10_checkpoint-')
+data_plot['baseline_epoch5'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer-midtune_vt-blip558k-epochs_5')
+data_plot['cmov3_epoch3'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov3-tune_mlp_lastlayer-cmov3-midtune_vt-blip558k-epochs_3')
+data_plot['cmov2_epoch3'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov2-tune_mlp_lastlayer_lr1e-3_bs64-cmov2-midtune_vt-blip558k-epochs_3')
+data_plot['cmov2_tokenloss_epoch3'] = get_data_plot('llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov2_token_loss-tune_mlp_lastlayer-cmov2token-midtune_vt-blip558k-epochs_3')
 
-data_plot = insert_epoch0(data_plot, load('./outputs/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov3-tune_mlp_lastlayer/results.json'), 'cmov3_epoch10_last5')
-data_plot = insert_epoch0(data_plot, load('/home/image_data/cktan/reps/sugar-crepe/outputs/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer/results.json'), 'baseline_epoch5')
+data_plot = insert_epoch0(data_plot, load('./outputs/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov3-tune_mlp_lastlayer/results.json'), 'cmov3_epoch3')
+data_plot = insert_epoch0(data_plot, load('./outputs/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer/results.json'), 'baseline_epoch5')
+data_plot = insert_epoch0(data_plot, load('./outputs/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov2-tune_mlp_lastlayer_lr1e-3_bs64/results.json'), 'cmov2_epoch3')
+data_plot = insert_epoch0(data_plot, load('./outputs/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-cmov2_token_loss-tune_mlp_lastlayer/results.json'), 'cmov2_tokenloss_epoch3')
 
 # print(data_plot)
 data_plot = reorder(data_plot)
 
-baseline_data = load("/home/image_data/cktan/reps/sugar-crepe/outputs/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer/results.json")
+baseline_data = load("/home/image_data/cktan/reps/sugar-crepe/outputs/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-select_last_layer/results.json")
 baseline_data['average'] = sum(baseline_data.values()) / len(baseline_data)
 
 llm_data = load("/home/image_data/cktan/reps/sugar-crepe/outputs/Qwen2-0.5B/results.json")
@@ -60,7 +64,7 @@ llm_data['average'] = sum(llm_data.values()) / len(llm_data)
 clip_data = load("/home/image_data/cktan/reps/sugar-crepe/outputs/clip-vit-large-patch14-336-openai/results.json")
 clip_data['average'] = sum(clip_data.values()) / len(clip_data)
 
-output_dir = dir_path+'/cmov3'
+output_dir = dir_path+'/cmo'
 os.makedirs(output_dir, exist_ok=True)
 # 创建 8 张图，每张图对应一个列表
 for i, (key, line) in enumerate(data_plot.items()):
