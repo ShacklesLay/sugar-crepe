@@ -258,7 +258,7 @@ def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir, t
         if world_size > 1:
             dist.barrier()
 
-def main(args, lark_task):
+def main(args):
     # Initialize distributed environment
     rank, world_size = get_rank_and_world_size()
     if world_size > 1:
@@ -327,5 +327,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
-    lark_message = 'Evaluate ' + get_model_name_from_path(args.model)
-    main(args, lark_task=lark_message)
+    main(args)

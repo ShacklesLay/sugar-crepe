@@ -12,9 +12,8 @@ import torch
 import torch.distributed as dist
 
 import sys
-sys.path.append("/remote-home1/cktan/server_tools/")
+sys.path.append("../server_tools/")
 from scripts import dump, load, get_rank_and_world_size
-from larknotice import lark_sender
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -137,8 +136,7 @@ def evaluate(dataset, model, tokenizer, work_dir):
         df = pd.DataFrame(rows, columns=['index','image_path', 'negative_caption', 'caption'])
         infer_data_job(df, model, tokenizer, c, work_dir)
 
-@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/9824a4f2-07e2-40cc-ae32-74ded5a0db96")
-def main(args, lark_task):
+def main(args):
     # Initialize distributed environment
     rank, world_size = get_rank_and_world_size()
     if world_size > 1:
@@ -180,6 +178,7 @@ def main(args, lark_task):
             correct = sum([int(x) for x in data['prediction']])
             total = len(data)
             metrics[c] = correct / total
+        metrics['average'] = sum(metrics.values()) / len(metrics)
         print(metrics)
         print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
         json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
@@ -193,5 +192,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
-    lark_message = 'Evaluate Qwen2.5'
-    main(args, lark_task=lark_message)
+    main(args)
