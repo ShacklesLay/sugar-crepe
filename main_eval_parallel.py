@@ -4,6 +4,7 @@ import os
 import os.path as osp
 from PIL import Image
 from tqdm import tqdm
+import re
 import copy
 import pandas as pd
 import datetime
@@ -12,37 +13,135 @@ import torch
 import torch.distributed as dist
 
 import sys
-sys.path.append("/remote-home1/cktan/server_tools/")
+sys.path.append("../server_tools")
 from scripts import dump, load, get_rank_and_world_size
-from larknotice import lark_sender
 
 from llava.model.builder import load_pretrained_model
 from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
-from llava.conversation import conv_templates, SeparatorStyle
 DEFAULT_IMAGE_TOKEN = '<image>'
 IMAGE_TOKEN_INDEX = -200
+IGNORE_INDEX = -100
 
-def get_ppl(text, image, model, tokenizer, image_processor, verbose=False):
-    content = DEFAULT_IMAGE_TOKEN + '\n'
+def preprocess_qwen(sources, tokenizer, has_image: bool = False, max_len=2048, system_message = "You are a helpful assistant."):
+    for source in sources:
+        for sentence in source:
+            num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence['value']))
+            if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence['value'] and not sentence['value'].startswith(DEFAULT_IMAGE_TOKEN):
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                sentence["value"] = sentence["value"].strip()
+    
+    # roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
+    roles = {"human": "user", "gpt": "assistant"}
+
+    # Add image tokens to tokenizer as a special tokens
+    # When there is actually an image, we add the image tokens as a special token
+    if has_image:
+        tokenizer.add_tokens(["<image>"], special_tokens=True)
+
+    image_token_index = tokenizer.convert_tokens_to_ids("<image>")
+    # unmask_tokens = ["<|im_start|>", "<|im_start|>", "\n"]
+    unmask_tokens_idx =  [198, 151644, 151645]
+    nl_tokens = tokenizer("\n").input_ids
+
+    # Reset Qwen chat templates so that it won't include system message every time we apply
+    chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+    tokenizer.chat_template = chat_template
+
+    # _system = tokenizer("system").input_ids + nl_tokens
+    # _user = tokenizer("user").input_ids + nl_tokens
+    # _assistant = tokenizer("assistant").input_ids + nl_tokens
+
+    # Apply prompt templates
+    input_ids, targets = [], []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != roles["human"]:
+            source = source[1:]
+
+        input_id, target = [], []
+
+        # New version, use apply chat template
+        # Build system message for each sentence
+        input_id += tokenizer.apply_chat_template([{"role" : "system", "content" : system_message}])
+        target += [IGNORE_INDEX] * len(input_id)
+
+        for conv in source:
+            # Make sure llava data can load
+            try:
+                role = conv["role"]
+                content = conv["content"]
+            except:
+                role = conv["from"]
+                content = conv["value"]
+
+            role =  roles.get(role, role)
+            
+            conv = [{"role" : role, "content" : content}]
+            encode_id = tokenizer.apply_chat_template(conv)
+            input_id += encode_id
+            if role in ["user", "system"]:
+                target += [IGNORE_INDEX] * len(encode_id)
+            else:
+                target += encode_id
+        
+
+                    
+        assert len(input_id) == len(target), f"{len(input_id)} != {len(target)}"
+        for idx, encode_id in enumerate(input_id):
+            if encode_id in unmask_tokens_idx:
+                target[idx] = encode_id
+            if encode_id == image_token_index:
+                input_id[idx] = IMAGE_TOKEN_INDEX
+        input_ids.append(input_id)
+        targets.append(target)
+    input_ids = torch.tensor(input_ids, dtype=torch.long)
+    targets = torch.tensor(targets, dtype=torch.long)
+
+    return dict(
+        input_ids=input_ids,  # tensor(bs x seq_len)
+        labels=targets,  # tensor(bs x seq_len)
+    )
+
+def get_ppl(text, image, model, tokenizer, image_processor, template='plain', verbose=False):
     image_tensor = process_images([image], image_processor, model.config)
     image_tensor = [_image.to(dtype=torch.bfloat16, device='cuda') for _image in image_tensor]
-    
-    conv = copy.deepcopy(conv_templates[conv_template])
-    conv.append_message(conv.roles[0], content)
-    conv.append_message(conv.roles[1], None)
-    prompt_question = conv.get_prompt()
-    prompt_question += text
-    
-    if verbose:
-        print(prompt_question)
-    
-    inputs_ids = tokenizer_image_token(prompt_question, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
-    
-    cont = model(inputs_ids, images=image_tensor, labels=inputs_ids, return_dict=True)
+
+    if template == 'plain':
+        prompt_question = DEFAULT_IMAGE_TOKEN + text + '\n'
+        inputs_ids = tokenizer_image_token(prompt_question, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
+        labels = inputs_ids.clone()
+        if verbose:
+            print(prompt_question)  
+        
+    elif template == 'qwen_1_5':
+        source = [
+            {
+                'from': 'human',
+                'value':'Write a terse but informative summary of the picture.\n<image>',
+            },
+            {
+                'from': 'gpt',
+                'value': text,
+            }]
+        data_dict = preprocess_qwen([source], tokenizer, has_image=True, system_message="You are a helpful assistant.")
+        inputs_ids = data_dict['input_ids'].cuda()
+        labels = data_dict['labels'].cuda()
+        if verbose:
+            tokenizer = copy.deepcopy(tokenizer)
+            tokenizer.add_tokens(["<image>"], special_tokens=True)
+            input_ids = []
+            for i in data_dict['input_ids'][0]:
+                if i != IMAGE_TOKEN_INDEX:
+                    input_ids.append(i)
+                else:
+                    input_ids.append(tokenizer.convert_tokens_to_ids("<image>"))
+            print(f"Template:\n {tokenizer.decode(input_ids)}")
+      
+    cont = model(inputs_ids, images=image_tensor, labels=labels, return_dict=True)
     return cont.loss.item()
 
 
-def infer_data(model, tokenizer, image_processor, work_dir, dataset, out_file, dataset_name, image_root):
+def infer_data(model, tokenizer, image_processor, work_dir, dataset, out_file, dataset_name, image_root, template):
     # Load previous results
     prev_file = f'{work_dir}/{dataset_name}_PREV.pkl'
     res = load(prev_file) if osp.exists(prev_file) else {}
@@ -82,8 +181,8 @@ def infer_data(model, tokenizer, image_processor, work_dir, dataset, out_file, d
         image = Image.open(image_path).convert('RGB')
         pos_text = data.iloc[i]['caption']
         neg_text = data.iloc[i]['negative_caption']
-        pos_ppl = get_ppl(pos_text, image, model, tokenizer, image_processor)
-        neg_ppl = get_ppl(neg_text, image, model, tokenizer, image_processor)
+        pos_ppl = get_ppl(pos_text, image, model, tokenizer, image_processor, template)
+        neg_ppl = get_ppl(neg_text, image, model, tokenizer, image_processor, template)
         torch.cuda.empty_cache()
         
         res[idx] = {
@@ -100,7 +199,7 @@ def infer_data(model, tokenizer, image_processor, work_dir, dataset, out_file, d
         
 
 # A wrapper for infer_data, do the pre & post processing
-def infer_data_job(dataset, model, image_root, tokenizer, image_processor, dataset_name, work_dir):
+def infer_data_job(dataset, model, image_root, tokenizer, image_processor, dataset_name, work_dir, template):
     rank, world_size = get_rank_and_world_size()
     result_file = osp.join(work_dir, f'{dataset_name}.xlsx')
     
@@ -118,7 +217,7 @@ def infer_data_job(dataset, model, image_root, tokenizer, image_processor, datas
     out_file = tmpl.format(rank)
 
     infer_data(
-        model, tokenizer, image_processor, work_dir=work_dir, dataset=dataset, out_file=out_file, dataset_name=dataset_name, image_root=image_root)
+        model, tokenizer, image_processor, work_dir=work_dir, dataset=dataset, out_file=out_file, dataset_name=dataset_name, image_root=image_root, template=template)
     if world_size > 1:
         dist.barrier()
 
@@ -145,8 +244,8 @@ def infer_data_job(dataset, model, image_root, tokenizer, image_processor, datas
         dist.barrier()
     
     
-def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir):
-    metrics = {}
+def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir, template):
+    rank, world_size = get_rank_and_world_size()
     for c, data_dict in dataset.items():
         # 先将原有json文件转换为padnas的dataframe，便于后续处理
         rows = []
@@ -154,27 +253,24 @@ def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir):
             row = [index, val['filename'], val['negative_caption'], val['caption']]
             rows.append(row)
         df = pd.DataFrame(rows, columns=['index','image_path', 'negative_caption', 'caption'])
-        infer_data_job(df, model, image_root, tokenizer, image_processor, c, work_dir)
-        # for i, data in tqdm(data_dict.items(), desc=f'evaluating {c}'):
-        #     verbose = True if i==0 else False
-        #     image_path = os.path.join(image_root, data['filename'])
-        #     image = Image.open(image_path).convert('RGB')
-        #     correct = text_retrieval(data['caption'], data['negative_caption'], image, model, tokenizer, image_processor, verbose)
-        #     correct_cnt += correct
+        infer_data_job(df, model, image_root, tokenizer, image_processor, c, work_dir, template)
+        
+        if world_size > 1:
+            dist.barrier()
 
-@lark_sender(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/9824a4f2-07e2-40cc-ae32-74ded5a0db96")
 def main(args, lark_task):
     # Initialize distributed environment
     rank, world_size = get_rank_and_world_size()
     if world_size > 1:
         local_rank = os.environ.get('LOCAL_RANK', 0)
         torch.cuda.set_device(int(local_rank))
-        dist.init_process_group(backend='nccl', timeout=datetime.timedelta(seconds=10800))
+        dist.init_process_group(backend='nccl', timeout=datetime.timedelta(seconds=3600))
         
     model_path = args.model
 
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path,args.model_base, model_name,torch_dtype="bfloat16")
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path,args.model_base, model_name,torch_dtype="bfloat16", device_map='cpu')
+    model.cuda()
     model.eval()
     
     # conv_template="qwen_1_5"
@@ -194,10 +290,15 @@ def main(args, lark_task):
     for c, data_path in data_dict.items():
         dataset[c] = json.load(open(data_path, 'r', encoding='utf-8'))
     
-    output_path = args.output + '/' + model_name
+    if 'checkpoint' in model_path:
+        model_paths = model_path.split('/')
+        output_path = args.output + '/' + model_paths[-2] + '/' + model_paths[-1]
+    else:
+        output_path = args.output + '/' + model_name
     os.makedirs(output_path, exist_ok=True)
     
-    evaluate(args.coco_image_root, dataset, model, tokenizer, image_processor, output_path)
+    
+    evaluate(args.coco_image_root, dataset, model, tokenizer, image_processor, output_path, args.template)
     
     rank,_= get_rank_and_world_size()
     if rank == 0:
@@ -207,17 +308,22 @@ def main(args, lark_task):
             correct = sum([int(x) for x in data['prediction']])
             total = len(data)
             metrics[c] = correct / total
+        metrics['average'] = sum(metrics.values()) / len(metrics)
         print(metrics)
         print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
         json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
+    
+    if world_size > 1:
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default= "/remote-home1/cktan/reps/LLaVA-NeXT/checkpoints/midtune/llavanext-clip-vit-large-patch14-336-openai-Qwen2.5-0.5B-mlp2x_gelu-midtune_blip558k_plain-tune_vt")
+    parser.add_argument('--model', type=str, default= "/root/checkpoints/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-template-qwen_1_5-lr1e-3-bs64")
     parser.add_argument('--output', type=str, default='./outputs', help="Directory to where results are saved")
-    parser.add_argument('--coco_image_root', type=str, default='/remote-home1/share/data/COCO2017val/val2017')
+    parser.add_argument('--coco_image_root', type=str, default='/inspire/hdd/ws-8207e9e2-e733-4eec-a475-cfa1c36480ba/embodied-multimodality/public/pywang/cktan/data/coco/val2017')
     parser.add_argument('--model_base', type=str, default=None)
     parser.add_argument('--data_root', type=str, default='./data')
+    parser.add_argument('--template', type=str, default='plain', help="Template for inference")
 
     args = parser.parse_args()
     
