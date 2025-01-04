@@ -8,6 +8,7 @@ import re
 import copy
 import pandas as pd
 import datetime
+import csv
 
 import torch
 import torch.distributed as dist
@@ -257,6 +258,17 @@ def evaluate(image_root, dataset, model, tokenizer, image_processor, work_dir, t
         
         if world_size > 1:
             dist.barrier()
+            
+def add_data_to_csv(file_path, data):
+    file_exists = os.path.exists(file_path)
+
+    with open(file_path, 'a', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=data.keys())
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow(data)
 
 def main(args):
     # Initialize distributed environment
@@ -266,16 +278,15 @@ def main(args):
         torch.cuda.set_device(int(local_rank))
         dist.init_process_group(backend='nccl', timeout=datetime.timedelta(seconds=3600))
         
-    model_path = args.model
+    if args.vt_path is None:
+        model_path = args.model
+    else:
+        model_path = args.vt_path
 
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path,args.model_base, model_name,torch_dtype="bfloat16", device_map='cpu')
+    tokenizer, model, image_processor, context_len = load_pretrained_model(args.model, args.model_base, model_name, vt_path=args.vt_path, torch_dtype="bfloat16", device_map='cpu')
     model.cuda()
     model.eval()
-    
-    # conv_template="qwen_1_5"
-    global conv_template
-    conv_template = "plain"
 
     data_dict = {
         'add_obj'    : f'{args.data_root}/add_obj.json',
@@ -309,9 +320,19 @@ def main(args):
             total = len(data)
             metrics[c] = correct / total
         metrics['average'] = sum(metrics.values()) / len(metrics)
+        
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        res = {'timestamp':timestamp, 'model':model_name}
+        for k, v in metrics.items():
+            metrics[k] = round(v,3)
+        res.update(metrics)
         print(metrics)
-        print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
-        json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
+        
+        save_path = '/'.join(output_path.split('/')[:-1]) + '/results.csv'
+        add_data_to_csv(save_path, res)
+        
+        # print(f"Dump results to: {os.path.join(output_path, f'results.json')}")
+        # json.dump(metrics, open(os.path.join(output_path, f'results.json'), 'w'), indent=4)
     
     if world_size > 1:
         dist.destroy_process_group()
@@ -320,6 +341,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default= "/root/checkpoints/projectors/llavanext-clip-vit-large-patch14-336-openai-Qwen2-0.5B-tune_mlp-template-qwen_1_5-lr1e-3-bs64")
     parser.add_argument('--output', type=str, default='./outputs', help="Directory to where results are saved")
+    parser.add_argument('--vt_path', default=None)
     parser.add_argument('--coco_image_root', type=str, default='/inspire/hdd/ws-8207e9e2-e733-4eec-a475-cfa1c36480ba/embodied-multimodality/public/pywang/cktan/data/coco/val2017')
     parser.add_argument('--model_base', type=str, default=None)
     parser.add_argument('--data_root', type=str, default='./data')
